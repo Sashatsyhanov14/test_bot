@@ -8,33 +8,39 @@ const openai = new OpenAI({
 });
 
 const AI_MODEL = process.env.AI_MODEL || 'google/gemini-2.0-flash-lite-001';
-const OWNER_CHAT_ID = process.env.OWNER_CHAT_ID; // Ваш ID для получения лидов
+const OWNER_CHAT_ID = process.env.OWNER_CHAT_ID;
 
 const chatHistory = new Map();
 const MAX_HISTORY = 20;
 
-// Системный промпт со всеми вашими правилами
 const SYSTEM_PROMPT = `
-Ты — экспертный ИИ-ассистент компании по производству кухонь на заказ "DHBot". 
-Твоя цель: квалифицировать клиента, следуя четкому сценарию, и вызвать доверие.
+Ты — экспертный ИИ-ассистент компании по производству кухонь "DHBot".
+Твоя задача: собрать данные клиента за 5 шагов.
 
-ПРАВИЛА ПОВЕДЕНИЯ:
-1. МГНОВЕННЫЙ ЗАХВАТ: Отвечай сразу, дружелюбно и профессионально.
-2. ОДИН ВОПРОС ЗА РАЗ: Не задавай всё сразу. Веди клиента по очереди:
-   - Форма кухни (Угловая, прямая, П-образная?)
-   - Размеры или погонные метры.
-   - Стиль (Лофт, классика, сканди, минимализм?)
-   - Техника (Встроенная или отдельно стоящая?)
-   - Сроки (Когда планируете установку?)
-3. ЭКСПЕРТНЫЕ КРОШКИ: После каждого ответа клиента давай короткий совет (например: "Отличный выбор, П-образная кухня — это максимум рабочей зоны. Кстати, в ней удобно реализовать 'рабочий треугольник'").
-4. ЦЕНА: Если спрашивают цену, отвечай: "Я не называю цену 'с потолка', потому что мы работаем на результат. Мне нужно еще буквально пару деталей, чтобы технолог сделал честный расчет, который не вырастет в процессе".
-5. ЗАВЕРШЕНИЕ: Когда узнаешь все 5 пунктов, поблагодари клиента и скажи, что передаешь данные технологу. 
+СЦЕНАРИЙ ВОПРОСОВ (задавай по одному!):
+1. Форма кухни (угловая, прямая или с островом?)
+2. Размеры или метраж кухни.
+3. Стиль кухни (минимализм, скандинавский, классика или свой вариант?)
+4. Желаемая дата установки.
+5. Контактный номер телефона.
 
-ВАЖНО: Если ты собрал ВСЕ ДАННЫЕ (Форма, Размер, Стиль, Техника, Срок), в конце своего сообщения ОБЯЗАТЕЛЬНО добавь техническую строку: [LEAD_COMPLETED]
+ПРАВИЛА:
+- После каждого ответа клиента давай короткий "экспертный" комментарий.
+- Если спрашивают цену, отвечай, что расчет сделает технолог после получения всех деталей.
+- Когда собраны ВСЕ 5 ПУНКТОВ, ответь СТРОГО этой фразой: "Спасибо за предоставленную информацию! Я передаю эти данные нашему технологу, который сделает расчет стоимости и свяжется с вами в ближайшее время."
+- В конце этого финального сообщения ОБЯЗАТЕЛЬНО добавь: [LEAD_COMPLETED]
+
+ИНСТРУКЦИЯ ПО ОТЧЕТУ:
+Когда увидишь [LEAD_COMPLETED], сформируй анкету в формате:
+1. Форма: ...
+2. Размеры: ...
+3. Стиль: ...
+4. Дата: ...
+5. Номер: ...
 `;
 
 bot.start((ctx) => {
-  chatHistory.delete(ctx.chat.id); // Сброс при старте
+  chatHistory.delete(ctx.chat.id);
   ctx.reply('Здравствуйте! Я помогу вам рассчитать стоимость вашей идеальной кухни. Подскажите, какая форма кухни вам нравится: угловая, прямая или, может быть, с островом?');
 });
 
@@ -59,39 +65,34 @@ bot.on('text', async (ctx) => {
 
     let botResponse = completion.choices[0].message.content;
 
-    // Проверка на завершение квалификации
     if (botResponse.includes('[LEAD_COMPLETED]')) {
       botResponse = botResponse.replace('[LEAD_COMPLETED]', '').trim();
       
-      // Отправка уведомления владельцу
-      if (OWNER_CHAT_ID) {
-        const summaryPrompt = [
-          ...history,
-          { role: 'system', content: 'Сформируй краткий отчет для владельца: Кухня (форма, размер), Стиль, Техника, Срок. Формат: "Новый лид! ..."' }
-        ];
-        
-        const summaryGen = await openai.chat.completions.create({
-          model: AI_MODEL,
-          messages: summaryPrompt,
-        });
+      const summaryPrompt = [
+        ...history,
+        { role: 'system', content: 'Сформируй анкету строго по пунктам: 1. Форма, 2. Размеры, 3. Стиль, 4. Дата, 5. Номер.' }
+      ];
+      
+      const summaryGen = await openai.chat.completions.create({
+        model: AI_MODEL,
+        messages: summaryPrompt,
+      });
 
-        const summary = summaryGen.choices[0].message.content;
-        
-        // Для теста отправляем анкету самому пользователю
-        await ctx.reply('✅ Опрос завершен! Вот какая анкета будет приходить владельцу компании:');
-        await ctx.reply(summary);
+      const summary = summaryGen.choices[0].message.content;
+      const userInfo = `\n\n👤 Клиент: @${ctx.from.username || 'n/a'}\n🆔 ID: ${ctx.from.id}`;
+      const finalReport = "🚀 НОВЫЙ ЛИД!\n" + summary + userInfo;
+
+      await ctx.reply(botResponse); // Отправляем финальную фразу
+      await ctx.reply('✅ Опрос завершен! Вот какое уведомление мгновенно пришло менеджеру в CRM/Telegram:');
+      await ctx.reply(finalReport);
+
+      if (OWNER_CHAT_ID) {
+        await bot.telegram.sendMessage(OWNER_CHAT_ID, finalReport);
       }
+      return;
     }
 
     history.push({ role: 'assistant', content: botResponse });
-
-    // Ограничение истории
-    if (history.length > MAX_HISTORY) {
-      const systemMsg = history[0];
-      const recent = history.slice(-MAX_HISTORY);
-      chatHistory.set(chatId, [systemMsg, ...recent]);
-    }
-
     await ctx.reply(botResponse);
 
   } catch (error) {
@@ -105,6 +106,6 @@ module.exports = async (req, res) => {
     await bot.handleUpdate(req.body);
     res.status(200).send('OK');
   } else {
-    res.status(200).send('Бот квалификации кухонь активен!');
+    res.status(200).send('Бот квалификации активен!');
   }
 };
